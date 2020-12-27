@@ -47,7 +47,7 @@ class smiles_to_onehot:
         # broadcast compare
         # unsqueeze last dim on labels, boolean compare to range up to max label, TF to 1/0 as int
         # (samples, max seq len, num labels)
-        self.ohe = (np.arange(self.labeled.max()) == np.expand_dims(self.labeled, -1)).astype(int)
+        self.ohe = (np.arange(self.labeled.max() + 1) == np.expand_dims(self.labeled, -1)).astype(int)
 
     def save_processed(self, dataset):
 
@@ -72,9 +72,13 @@ class smiles_to_onehot:
 
         print('smiles to labels...')
         self.to_labels()
+        print(f'number of characters: {len(self.itos)}')
+        print(self.itos)
+        print(f'smiles labeled: {self.labeled.shape}')
 
         print('one hot encoding...')
         self.labels_to_onehot()
+        print(f'smiles ohe: {self.ohe.shape}')
 
 
 def parse_args():
