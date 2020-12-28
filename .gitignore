@@ -8,4 +8,5 @@ inputs/uniprot-reviewed-lim_sequences.txt
 preprocessed
 data/zinc
 data/chembl
-
+logs/
+checkpoints/
