@@ -10,6 +10,8 @@ from dataset import Zinc
 import logging
 from pathlib import Path
 from tqdm.auto import tqdm
+import time
+from utils import smile_to_ohe, labels_to_smiles
 
 def parse_args():
 
@@ -25,10 +27,10 @@ def parse_args():
             help='checkpoint path to restart training from, optional')
     parser.add_argument('-n', '--name', type=str, required=True,
             help='logging run name')
-    parser.add_argument('-l', '--lr', type=float, default=5e-4,
-            help='learning rate (default: 3e-4)')
-    parser.add_argument('-e', '--epochs', type=int, default=50,
-            help='number of epochs (default: 50)')
+    parser.add_argument('-l', '--lr', type=float, default=1e-3,
+            help='learning rate (default: 1e-3)')
+    parser.add_argument('-e', '--epochs', type=int, default=10,
+            help='number of epochs (default: 10)')
 
     return parser.parse_args()
 
@@ -46,8 +48,12 @@ def save_checkpoint(model, optimizer, name, epoch, delete=True):
 
     # delete last
     if delete:
-        last_check = list(Path('./checkpoints').glob('*.pt'))[0]
-        last_check.unlink()
+        # first run will be empty
+        try:
+            last_check = list(Path('./checkpoints').glob('*.pt'))[0]
+            last_check.unlink()
+        except:
+            pass
 
     torch.save({'epoch' : epoch,
         'model_state_dict' : model.state_dict(),
@@ -83,27 +89,27 @@ def setup_model(charset_len, lr, checkpoint=None):
     prop = propPred()
 
     model = ChemVAE(encoder, decoder, prop)
+    model = model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     epoch = 0
 
     # restart training
     if checkpoint is not None:
         cp = torch.load(checkpoint)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        epoch = checkpoint['epoch']
+        model.load_state_dict(cp['model_state_dict'])
+        optimizer.load_state_dict(cp['optimizer_state_dict'])
+        epoch = cp['epoch']
 
-    model = model.to(device)
 
     return model, optimizer, epoch
 
 
 def calc_vae_loss(true_labels, x_recon_ohe, z_mu, z_logvar):
 
-    recon_loss = F.cross_entropy(x_recon_ohe, true_labels, ignore_index=0, reduction='sum')
-    kl_loss = -0.5 * torch.sum(1 + z_logvar - z_mu**2 - torch.exp(z_logvar))
+    recon_loss = F.cross_entropy(x_recon_ohe, true_labels, reduction='sum')# / true_labels.shape[0]
+    kl_loss = -0.5 * torch.sum(1 + z_logvar - z_mu**2 - torch.exp(z_logvar))# / z_mu.shape[0]
 
-    return (recon_loss + kl_loss) / len(true_labels)
+    return recon_loss + kl_loss
 
 
 def train_one_epoch(model, optimizer, loader):
@@ -111,6 +117,7 @@ def train_one_epoch(model, optimizer, loader):
     model.train()
 
     epoch_loss = 0
+    epoch_acc = 0
 
     loop = tqdm(enumerate(loader), total=len(loader), leave=False)
     for i, (ohes, labels, props) in loop:
@@ -120,7 +127,6 @@ def train_one_epoch(model, optimizer, loader):
         props = props.to(device)
 
         # (b, seq_len, features) -> (b, features, seq_len) for conv
-        # change back for loss
         ohes = ohes.permute(0, 2, 1)
 
         # encoder out
@@ -129,6 +135,8 @@ def train_one_epoch(model, optimizer, loader):
         z_mu, z_logvar, x_recon_ohe, props_out = model(ohes)
 
         # add all losses and backward
+        # crossentropy with ohe input and labeled targets
+        # https://discuss.pytorch.org/t/pytorch-lstm-target-dimension-in-calculating-cross-entropy-loss/30398
         vae_loss = calc_vae_loss(labels, x_recon_ohe.permute(0, 2, 1), z_mu, z_logvar)
         prop_loss = F.mse_loss(props_out, props)
 
@@ -138,13 +146,102 @@ def train_one_epoch(model, optimizer, loader):
         loss.backward()
         optimizer.step()
 
-        epoch_loss += loss.item()
+        # reconstruction accuracy, per token over all non-padding
+        pred_labels = x_recon_ohe.argmax(dim=-1)
+        mask = (labels != 0)
+        correct = (torch.masked_select(pred_labels, mask) == torch.masked_select(labels, mask)).sum().float()
+        acc = correct / mask.sum()
 
-    return epoch_loss / len(loader)
+        epoch_loss += loss.item()
+        epoch_acc += acc.item()
+
+    return epoch_loss / len(loader), epoch_acc / len(loader)
+
 
 def run_eval(model, loader):
 
-    pass
+    # same as train with no optimizer
+
+    model.eval()
+
+    epoch_loss = 0
+    epoch_acc = 0
+
+    with torch.no_grad():
+
+        loop = tqdm(enumerate(loader), total=len(loader), leave=False)
+        for i, (ohes, labels, props) in loop:
+
+            ohes = ohes.to(device)
+            labels = labels.to(device).long()
+            props = props.to(device)
+
+            ohes = ohes.permute(0, 2, 1)
+            z_mu, z_logvar, x_recon_ohe, props_out = model(ohes)
+
+            vae_loss = calc_vae_loss(labels, x_recon_ohe.permute(0, 2, 1), z_mu, z_logvar)
+            prop_loss = F.mse_loss(props_out, props)
+            loss = vae_loss + prop_loss
+
+            pred_labels = x_recon_ohe.argmax(dim=-1)
+            mask = (labels != 0)
+            correct = (torch.masked_select(pred_labels, mask) == torch.masked_select(labels, mask)).sum().float()
+            acc = correct / mask.sum()
+
+            epoch_loss += loss.item()
+            epoch_acc += acc.item()
+
+    return epoch_loss / len(loader), epoch_acc / len(loader)
+
+
+def train_n_epochs(n_epochs, model, optimizer, train_loader, valid_loader, start_epoch, name, dataset_stoi):
+
+    # add lr scheduler
+
+    start = time.time()
+    for epoch in range(1, n_epochs+1):
+
+        check_prog(model, dataset)
+        total = start_epoch + epoch
+
+        train_loss, train_acc = train_one_epoch(model, optimizer, train_loader)
+        valid_loss, valid_acc = run_eval(model, valid_loader)
+        end = time.time()
+        elapsed = (end - start) / 60
+
+        if (epoch % 5 == 0) or (epoch == n_epochs):
+            save_checkpoint(model, optimizer, name, total, delete=True)
+
+        logging.info(f'Epoch: {total} | Time: {elapsed:.2f}m')
+        logging.info(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc*100:.2f}%')
+        logging.info(f'\tValid Loss: {valid_loss:.3f} | Valid Acc: {valid_acc*100:.2f}%')
+
+
+
+def check_prog(model, dataset):
+
+    model.eval()
+    with torch.no_grad():
+
+        # fixed examples
+        samples = ['COc1ccc(C(=O)N(C)[C@@H](C)C/C(N)=N/O)cc1O',
+                   'Cc1ccc(C)c(-n2c(SCCCCCO)nc3ccccc3c2=O)c1',
+                   'Fc1ccc(F)c(C[NH+]2CCC(n3cc(-c4cccnc4)nn3)CC2)c1F',
+                   'N#Cc1ccc(OC2CCC(NC(=O)c3ccc[nH]3)CC2)nc1',
+                   'S=C1[NH+]=N[C@@H]2c3c(sc4c3CC[NH+](Cc3ccccc3)C4)-n3c(n[nH]c3=S)N12']
+
+        ohes = np.concatenate([smile_to_ohe(sample, dataset.stoi) for sample in samples], axis=0)
+        ohes = torch.tensor(ohes).to(device).permute(0, 2, 1)
+
+        # push through model and compare reconstruction
+        z_mu, z_logvar, x_recon_ohe, props_out = model(ohes)
+
+        preds = x_recon_ohe.argmax(dim=-1).cpu().numpy()
+        smiles_out = labels_to_smiles(preds, dataset.itos)
+
+        for i in range(len(samples)):
+            logging.info(samples[i])
+            logging.info(smiles_out[i])
 
 
 if __name__ == '__main__':
@@ -158,5 +255,6 @@ if __name__ == '__main__':
 
     train_loader, valid_loader, dataset = setup_loaders(args.valid, args.path, args.batch)
     model, optimizer, epoch = setup_model(len(dataset.itos), args.lr, args.checkpoint)
-    train_loss = train_one_epoch(model, optimizer, valid_loader)
-    print(train_loss)
+
+    # temp
+    train_n_epochs(args.epochs, model, optimizer, valid_loader, valid_loader, epoch, args.name, dataset.stoi)

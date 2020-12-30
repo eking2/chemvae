@@ -79,14 +79,15 @@ class Decoder(nn.Module):
         self.gru = nn.GRU(196, 488, num_layers=3, batch_first=True)
         # (batch, 120, 488)
 
-        self.gru_final = nn.GRU(488, charset, batch_first=True)
+        #self.gru_final = nn.GRU(488, charset, batch_first=True)
+        self.fc = nn.Linear(488, charset)
         # (batch, 120, 35)
 
     def forward(self, x):
 
         out = self.net(x)
         out, hidden = self.gru(out)
-        out, hidden = self.gru_final(out)
+        out = self.fc(out)
 
         return out
 
@@ -144,7 +145,7 @@ class ChemVAE(nn.Module):
         z = self.reparameterize(z_mu, z_logvar)
 
         decoded = self.decoder(z)
-        props = self.prop_pred(z)
+        props = self.prop_pred(z_mu)
 
         return z_mu, z_logvar, decoded, props
 
