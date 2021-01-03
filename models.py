@@ -24,31 +24,32 @@ class Encoder(nn.Module):
         # input = (batch, charset, seq_len) = zinc (batch, 35, 120)
         self.conv = nn.Sequential(
             nn.Conv1d(charset, 9, kernel_size=9, bias=False),
-            nn.Tanh(),
+            nn.LeakyReLU(),
             nn.BatchNorm1d(9),
             # (batch, 9, 112)
 
             nn.Conv1d(9, 9, kernel_size=9, bias=False),
-            nn.Tanh(),
+            nn.LeakyReLU(),
             nn.BatchNorm1d(9),
             # (batch, 9, 104)
 
             nn.Conv1d(9, 10, kernel_size=11, bias=False),
-            nn.Tanh(),
+            nn.LeakyReLU(),
             nn.BatchNorm1d(10),
             # (batch, 10, 94)
 
             nn.Flatten(),
             # (batch, 940)
 
-            nn.Linear(940, 196),
+            nn.Linear(940, 435),
             nn.Dropout(0.1),
-            nn.BatchNorm1d(196)
-            # (batch, 196)
+            nn.LeakyReLU(),
+            nn.BatchNorm1d(435)
+            # (batch, 435)
         )
 
-        self.fc11 = nn.Linear(196, 196)
-        self.fc12 = nn.Linear(196, 196)
+        self.fc11 = nn.Linear(435, 292)
+        self.fc12 = nn.Linear(435, 292)
 
     def forward(self, x):
 
@@ -64,23 +65,23 @@ class Decoder(nn.Module):
     def __init__(self, charset):
         super().__init__()
 
-        # input = (batch, z_dim) = (batch, 196)
+        # input = (batch, z_dim) = (batch, 292)
         self.net = nn.Sequential(
-            nn.Linear(196, 196, bias=False),
-            nn.Tanh(),
+            nn.Linear(292, 292, bias=False),
+            nn.LeakyReLU(),
             nn.Dropout(0.1),
-            nn.BatchNorm1d(196),
-            # (batch, 196)
+            nn.BatchNorm1d(292),
+            # (batch, 292)
 
             Repeat(120),
-            # (batch, 120, 196)
+            # (batch, 120, 292)
         )
 
-        self.gru = nn.GRU(196, 488, num_layers=3, batch_first=True)
-        # (batch, 120, 488)
+        self.gru = nn.GRU(292, 501, num_layers=3, batch_first=True)
+        # (batch, 120, 501)
 
-        #self.gru_final = nn.GRU(488, charset, batch_first=True)
-        self.fc = nn.Linear(488, charset)
+        #self.gru_final = nn.GRU(501, charset, batch_first=True)
+        self.fc = nn.Linear(501, charset)
         # (batch, 120, 35)
 
     def forward(self, x):
@@ -88,6 +89,7 @@ class Decoder(nn.Module):
         out = self.net(x)
         out, hidden = self.gru(out)
         out = self.fc(out)
+        #out, hidden = self.gru_final(out)
 
         return out
 
@@ -96,21 +98,21 @@ class propPred(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # input = (batch, z_dim) = (batch, 196)
+        # input = (batch, z_dim) = (batch, 292)
         self.net = nn.Sequential(
-            nn.Linear(196, 67),
-            nn.Tanh(),
+            nn.Linear(292, 67),
+            nn.LeakyReLU(),
             nn.Dropout(0.15),
             # (batch, 67)
 
             nn.Linear(67, 66, bias=False),
-            nn.Tanh(),
+            nn.LeakyReLU(),
             nn.Dropout(0.15),
             nn.BatchNorm1d(66),
             # (batch, 66)
 
             nn.Linear(66, 65, bias=False),
-            nn.Tanh(),
+            nn.LeakyReLU(),
             nn.Dropout(0.15),
             nn.BatchNorm1d(65),
             # (batch, 65)
@@ -132,10 +134,10 @@ class ChemVAE(nn.Module):
         self.decoder = decoder
         self.prop_pred = prop_pred
 
-    def reparameterize(self, z_mu, z_logvar):
+    def reparameterize(self, z_mu, z_logvar, scale=1e-2):
 
         std = torch.exp(0.5 * z_logvar)
-        eps = torch.randn_like(std)
+        eps = scale * torch.randn_like(std)
 
         return z_mu + eps*std
 
@@ -162,7 +164,7 @@ if __name__ == '__main__':
     print()
 
     test_decoder = Decoder(35)
-    x = torch.randn(2, 196)
+    x = torch.randn(2, 292)
     decoder_out = test_decoder(x)
     print(f'decoder input: {x.shape}')
     print(f'decoder output: {decoder_out.shape}')

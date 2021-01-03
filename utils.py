@@ -3,7 +3,7 @@ import numpy as np
 
 def smile_to_ohe(sample, stoi, pad=120):
 
-    # input is list of strings
+    # input is strings
 
     charset_len = len(stoi)
 
@@ -22,7 +22,7 @@ def labels_to_smiles(samples, itos):
 
     smiles = []
     for sample in arr:
-        out = ''.join([x if x != '<pad>' else ' ' for x in sample])
+        out = ''.join([x if x != '<pad>' else '' for x in sample])
         smiles.append(out)
 
     return smiles

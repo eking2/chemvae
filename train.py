@@ -50,7 +50,7 @@ def save_checkpoint(model, optimizer, name, epoch, delete=True):
     if delete:
         # first run will be empty
         try:
-            last_check = list(Path('./checkpoints').glob('*.pt'))[0]
+            last_check = list(Path('./checkpoints').glob(f'{name}*.pt'))[0]
             last_check.unlink()
         except:
             pass
@@ -76,8 +76,10 @@ def setup_loaders(valid_ratio, path, batch_size):
     train_dataset = Subset(dataset, train)
     valid_dataset = Subset(dataset, valid)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                              num_workers=4, pin_memory=True)
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False,
+                              num_workers=4, pin_memory=True)
 
     return train_loader, valid_loader, dataset
 
@@ -196,7 +198,7 @@ def run_eval(model, loader):
 
 def train_n_epochs(n_epochs, model, optimizer, train_loader, valid_loader, start_epoch, name, dataset_stoi):
 
-    # add lr scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5)
 
     start = time.time()
     for epoch in range(1, n_epochs+1):
@@ -206,6 +208,8 @@ def train_n_epochs(n_epochs, model, optimizer, train_loader, valid_loader, start
 
         train_loss, train_acc = train_one_epoch(model, optimizer, train_loader)
         valid_loss, valid_acc = run_eval(model, valid_loader)
+        scheduler.step(valid_loss)
+
         end = time.time()
         elapsed = (end - start) / 60
 
@@ -256,5 +260,6 @@ if __name__ == '__main__':
     train_loader, valid_loader, dataset = setup_loaders(args.valid, args.path, args.batch)
     model, optimizer, epoch = setup_model(len(dataset.itos), args.lr, args.checkpoint)
 
-    # temp
-    train_n_epochs(args.epochs, model, optimizer, valid_loader, valid_loader, epoch, args.name, dataset.stoi)
+    logging.info(model)
+
+    train_n_epochs(args.epochs, model, optimizer, train_loader, valid_loader, epoch, args.name, dataset.stoi)
